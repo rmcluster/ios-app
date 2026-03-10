@@ -207,8 +207,9 @@ final class InferenceEngine: ObservableObject {
 
             let (freeMB, totalMB) = Self.deviceMemoryMB()
             await MainActor.run { self.rpcServerState = .running(endpoint: endpoint) }
+            let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.path
             // Blocking call – returns only when the server socket is closed.
-            bridge.startRPCServer(endpoint, cacheDir: nil, freeMB: freeMB, totalMB: totalMB, threads: UInt(threads))
+            bridge.startRPCServer(endpoint, cacheDir: cacheDir, freeMB: freeMB, totalMB: totalMB, threads: UInt(threads))
             await MainActor.run { self.rpcServerState = .idle }
         }
     }
