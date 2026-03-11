@@ -104,6 +104,14 @@ typedef void (^LlamaShardCallback)(NSData *hiddenState,
                     config:(LlamaGenerationConfig *)config
                   callback:(LlamaTokenCallback)callback;
 
+/// Apply the model's built-in chat template (from GGUF metadata) to a list of
+/// messages.  Each message is a dictionary with "role" and "content" keys.
+/// Pass addAssistantPrefix:YES to append the start-of-assistant-turn marker so
+/// the model continues generating the assistant reply.
+/// Returns the formatted prompt string, or nil if the model has no template.
+- (nullable NSString *)applyChatTemplate:(NSArray<NSDictionary<NSString *, NSString *> *> *)messages
+                      addAssistantPrefix:(BOOL)addAssistantPrefix;
+
 /// Tokenize `text` and return an array of NSNumber-wrapped token IDs.
 - (NSArray<NSNumber *> *)tokenizeText:(NSString *)text addBOS:(BOOL)addBOS;
 

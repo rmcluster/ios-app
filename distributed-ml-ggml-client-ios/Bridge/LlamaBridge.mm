@@ -258,6 +258,48 @@ typedef NS_ENUM(NSInteger, LlamaBridgeError) {
     return _modelInfo;
 }
 
+// ── Chat template ─────────────────────────────────────────────────────────────
+- (nullable NSString *)applyChatTemplate:(NSArray<NSDictionary<NSString *, NSString *> *> *)messages
+                      addAssistantPrefix:(BOOL)addAssistantPrefix {
+#if !LLAMA_AVAILABLE
+    return nil;
+#else
+    if (!_model) return nil;
+
+    // Keep strings alive for the duration of the C call.
+    std::vector<std::string> roles, contents;
+    std::vector<llama_chat_message> msgs;
+    roles.reserve(messages.count);
+    contents.reserve(messages.count);
+    msgs.reserve(messages.count);
+
+    for (NSDictionary<NSString *, NSString *> *msg in messages) {
+        roles.push_back(std::string(msg[@"role"].UTF8String ?: "user"));
+        contents.push_back(std::string(msg[@"content"].UTF8String ?: ""));
+        msgs.push_back({ roles.back().c_str(), contents.back().c_str() });
+    }
+
+    const char *tmpl = llama_model_chat_template(_model, /*name=*/nullptr);
+    std::vector<char> buf(4096);
+    int32_t n = llama_chat_apply_template(tmpl,
+                                          msgs.data(), msgs.size(),
+                                          (bool)addAssistantPrefix,
+                                          buf.data(), (int32_t)buf.size());
+    if (n < 0) return nil;
+    if (n > (int32_t)buf.size()) {
+        buf.resize((size_t)n + 1);
+        n = llama_chat_apply_template(tmpl,
+                                      msgs.data(), msgs.size(),
+                                      (bool)addAssistantPrefix,
+                                      buf.data(), (int32_t)buf.size());
+        if (n < 0) return nil;
+    }
+    return [[NSString alloc] initWithBytes:buf.data()
+                                    length:(NSUInteger)n
+                                  encoding:NSUTF8StringEncoding];
+#endif
+}
+
 // ── Tokenization ──────────────────────────────────────────────────────────────
 - (NSArray<NSNumber *> *)tokenizeText:(NSString *)text addBOS:(BOOL)addBOS {
 #if !LLAMA_AVAILABLE

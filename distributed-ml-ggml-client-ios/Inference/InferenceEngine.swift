@@ -19,6 +19,14 @@ import Darwin
 import UIKit
 #endif
 
+// ── Chat message ──────────────────────────────────────────────────────────────
+
+struct ChatMessage: Identifiable, Equatable {
+    let id = UUID()
+    let role: String    // "user" | "assistant"
+    var content: String
+}
+
 // ── Generation result ─────────────────────────────────────────────────────────
 
 struct GenerationResult: Sendable {
@@ -57,6 +65,7 @@ final class InferenceEngine: ObservableObject {
     @Published var tokensPerSecond: Double = 0
     @Published var rpcServerState: RPCServerState = .idle
     @Published var serverRegistrationStatus: String = ""
+    @Published var chatMessages: [ChatMessage] = []
 
     // ── nonisolated(unsafe): accessed from detached tasks, single-threaded ────
     nonisolated(unsafe) private let bridge = LlamaBridge()
@@ -105,6 +114,7 @@ final class InferenceEngine: ObservableObject {
         modelState    = .unloaded
         generatedText = ""
         tokensPerSecond = 0
+        chatMessages  = []
     }
 
     var modelInfo: LlamaModelInfo? { bridge.modelInfo }
@@ -171,6 +181,50 @@ final class InferenceEngine: ObservableObject {
     func cancelGeneration() {
         generationTask?.cancel()
         generationTask = nil
+        if let info = bridge.modelInfo {
+            modelState = .ready(modelName: info.name, nLayers: info.nLayers)
+        }
+    }
+
+    // ── Conversation mode ─────────────────────────────────────────────────────
+
+    /// Send a user message and stream the assistant reply into `chatMessages`.
+    func sendMessage(_ text: String, config: LlamaGenerationConfig = .defaults()) {
+        guard case .ready = modelState else { return }
+
+        // Build the message list for the template (all history + new user turn).
+        let historyForTemplate = chatMessages + [ChatMessage(role: "user", content: text)]
+        let nsMessages = historyForTemplate.map { ["role": $0.role, "content": $0.content] }
+
+        // Apply the model's built-in chat template (from GGUF metadata).
+        guard let formatted = bridge.applyChatTemplate(nsMessages, addAssistantPrefix: true) else {
+            modelState = .error("Model has no chat template — cannot use conversation mode")
+            return
+        }
+
+        chatMessages.append(ChatMessage(role: "user", content: text))
+        chatMessages.append(ChatMessage(role: "assistant", content: ""))
+        let assistantIndex = chatMessages.count - 1
+
+        modelState      = .generating
+        tokensPerSecond = 0
+
+        generationTask = Task { @MainActor in
+            for await result in generate(prompt: formatted, config: config) {
+                chatMessages[assistantIndex].content = result.text
+                tokensPerSecond = result.tokensPerSecond
+            }
+            if case .generating = modelState, let info = bridge.modelInfo {
+                modelState = .ready(modelName: info.name, nLayers: info.nLayers)
+            }
+        }
+    }
+
+    func clearChat() {
+        generationTask?.cancel()
+        generationTask = nil
+        chatMessages   = []
+        tokensPerSecond = 0
         if let info = bridge.modelInfo {
             modelState = .ready(modelName: info.name, nLayers: info.nLayers)
         }

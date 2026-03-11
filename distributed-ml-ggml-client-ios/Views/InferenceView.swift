@@ -20,7 +20,7 @@ struct InferenceView: View {
     @EnvironmentObject private var engine: InferenceEngine
 
     // ── UI state ──────────────────────────────────────────────────────────────
-    @State private var promptText    = "The quick brown fox"
+    @State private var chatInput     = ""
     @State private var contextSize   = 1024
     @State private var maxTokens     = 200
     @State private var temperature   = 0.8
@@ -36,25 +36,42 @@ struct InferenceView: View {
     
     @State private var serverURL:  String = ""
     @State private var showRPC:    Bool   = true
+    @State private var selectedTab: Int  = 1
 
     // ── Body ──────────────────────────────────────────────────────────────────
 
     var body: some View {
-        NavigationView {
-            List {
-                // modelSection
-                // if case .ready = engine.modelState {
-                //     generationSection
-                //     outputSection
-                // }
-                rpcWorkerSection
+        TabView(selection: $selectedTab) {
+            NavigationView {
+                List {
+                    modelSection
+                    if case .ready = engine.modelState {
+                        chatSection
+                    }
+                    if case .generating = engine.modelState {
+                        chatSection
+                    }
+                }
+                .navigationTitle("Inference")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { toolbarContent }
+                .sheet(isPresented: $showDocPicker) { documentPicker }
             }
-            .navigationTitle("GGML Inference")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { toolbarContent }
-            .sheet(isPresented: $showDocPicker) { documentPicker }
+            .navigationViewStyle(.stack)
+            .tabItem { Label("Inference", systemImage: "cpu") }
+            .tag(0)
+
+            NavigationView {
+                List {
+                    rpcWorkerSection
+                }
+                .navigationTitle("GGML RPC Worker")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+            .navigationViewStyle(.stack)
+            .tabItem { Label("GGML RPC Worker", systemImage: "network") }
+            .tag(1)
         }
-        .navigationViewStyle(.stack)
         .onAppear { refreshLocalModels() }
     }
 
@@ -129,16 +146,80 @@ struct InferenceView: View {
         }
     }
 
-    // ── Generation controls ───────────────────────────────────────────────────
+    // ── Conversation ──────────────────────────────────────────────────────────
+
+    private var isGenerating: Bool {
+        if case .generating = engine.modelState { return true }
+        return false
+    }
 
     @ViewBuilder
-    private var generationSection: some View {
-        Section("Prompt") {
-            TextEditor(text: $promptText)
-                .frame(minHeight: 80)
-                .font(.body)
+    private var chatSection: some View {
+        // Message history
+        if !engine.chatMessages.isEmpty {
+            Section("Conversation") {
+                ForEach(engine.chatMessages) { msg in
+                    VStack(alignment: msg.role == "user" ? .trailing : .leading, spacing: 2) {
+                        Text(msg.role == "user" ? "You" : "Assistant")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(msg.content.isEmpty ? "…" : msg.content)
+                            .font(.body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity,
+                                   alignment: msg.role == "user" ? .trailing : .leading)
+                    }
+                    .padding(.vertical, 2)
+                }
+                if engine.tokensPerSecond > 0 {
+                    HStack {
+                        Spacer()
+                        Text(String(format: "%.1f tok/s", engine.tokensPerSecond))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
 
+        // Input bar
+        Section {
+            HStack(alignment: .bottom, spacing: 10) {
+                Group {
+                    if #available(iOS 16.0, *) {
+                        TextField("Message…", text: $chatInput, axis: .vertical)
+                            .lineLimit(1...5)
+                    } else {
+                        TextField("Message…", text: $chatInput)
+                            .lineLimit(5)
+                    }
+                }
+                .disabled(isGenerating)
+                Button {
+                    if isGenerating {
+                        engine.cancelGeneration()
+                    } else {
+                        let text = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !text.isEmpty else { return }
+                        chatInput = ""
+                        let config = LlamaGenerationConfig.defaults()
+                        config.maxNewTokens = maxTokens
+                        config.temperature  = Float(temperature)
+                        engine.sendMessage(text, config: config)
+                    }
+                } label: {
+                    Image(systemName: isGenerating ? "stop.circle.fill" : "arrow.up.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(
+                            chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isGenerating
+                                ? Color.secondary : Color.accentColor
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+
+        // Parameters
         Section("Parameters") {
             HStack {
                 Text("Max tokens")
@@ -152,32 +233,15 @@ struct InferenceView: View {
             }
         }
 
-        Section {
-            Button { runGeneration() } label: {
-                Label("Generate", systemImage: "play.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(promptText.isEmpty)
-        }
-    }
-
-    // ── Output ────────────────────────────────────────────────────────────────
-
-    @ViewBuilder
-    private var outputSection: some View {
-        if !engine.generatedText.isEmpty {
-            Section("Output") {
-                Text(engine.generatedText)
-                    .font(.body.monospaced())
-                    .textSelection(.enabled)
-                    .animation(.default, value: engine.generatedText)
-                Button {
-                    UIPasteboard.general.string = engine.generatedText
+        // Clear
+        if !engine.chatMessages.isEmpty {
+            Section {
+                Button(role: .destructive) {
+                    engine.clearChat()
                 } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
+                    Label("Clear conversation", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
                 }
-                .font(.caption)
             }
         }
     }
@@ -186,17 +250,8 @@ struct InferenceView: View {
 
     @ViewBuilder
     private var rpcWorkerSection: some View {
-        Section {
-            // Toggle("RPC Worker mode", isOn: $showRPC)
-        } header: {
-            Text("GGML RPC Backend")
-        } footer: {
-            Text("Run this device as a Metal GPU compute backend. An external llama-cli coordinator connects via TCP and offloads tensor operations here. The phone is a leaf node only — it never coordinates inference.")
-        }
-
         if showRPC {
             let interfaces = ShardNetwork.allLocalIPv4s
-            let primaryIP  = interfaces.first?.ip
             let isRunning  = rpcIsRunning
 
             // ── Endpoint card ─────────────────────────────────────────────────
@@ -295,27 +350,27 @@ struct InferenceView: View {
             }
 
             // ── Optional device registry ───────────────────────────────────────
-            Section {
-                TextField("Registry URL  e.g. http://192.168.1.100:8080",
-                          text: $serverURL)
-                    .keyboardType(.URL)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                if !engine.serverRegistrationStatus.isEmpty {
-                    Text(engine.serverRegistrationStatus)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Button("Register this device") {
-                    registerWithServer(ip: primaryIP ?? "")
-                }
-                .disabled(serverURL.trimmingCharacters(in: .whitespaces).isEmpty
-                          || primaryIP == nil)
-            } header: {
-                Text("Device registry (optional)")
-            } footer: {
-                Text("Register with the orchestration server so coordinators can look up this device's endpoint without manually noting the IP address.")
-            }
+            // Section {
+            //     TextField("Registry URL  e.g. http://192.168.1.100:8080",
+            //               text: $serverURL)
+            //         .keyboardType(.URL)
+            //         .autocorrectionDisabled()
+            //         .textInputAutocapitalization(.never)
+            //     if !engine.serverRegistrationStatus.isEmpty {
+            //         Text(engine.serverRegistrationStatus)
+            //             .font(.caption)
+            //             .foregroundStyle(.secondary)
+            //     }
+            //     Button("Register this device") {
+            //         registerWithServer(ip: primaryIP ?? "")
+            //     }
+            //     .disabled(serverURL.trimmingCharacters(in: .whitespaces).isEmpty
+            //               || primaryIP == nil)
+            // } header: {
+            //     Text("Device registry (optional)")
+            // } footer: {
+            //     Text("Register with the orchestration server so coordinators can look up this device's endpoint without manually noting the IP address.")
+            // }
         }
     }
 
@@ -379,13 +434,6 @@ struct InferenceView: View {
             at: docs, includingPropertiesForKeys: nil))?.filter {
             $0.pathExtension.lowercased() == "gguf"
         }.sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
-    }
-
-    private func runGeneration() {
-        let config = LlamaGenerationConfig.defaults()
-        config.maxNewTokens = maxTokens
-        config.temperature  = Float(temperature)
-        engine.generateIntoState(prompt: promptText, config: config)
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
