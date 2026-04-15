@@ -30,8 +30,8 @@ struct InferenceView: View {
     // ── RPC worker state ──────────────────────────────────────────────────────
     @AppStorage("rpcHost") private var rpcHost: String = "0.0.0.0"
     @AppStorage("rpcPort") private var rpcPort: Int = 50052
-    @AppStorage("rpcDiscoveryIp") private var rpcDiscoveryIp: String = "255.255.255.255"
-    @AppStorage("rpcDiscoveryPort") private var rpcDiscoveryPort: Int = 50055
+    @AppStorage("rpcDiscoveryIp") private var rpcDiscoveryIp: String = ""
+    @AppStorage("rpcDiscoveryPort") private var rpcDiscoveryPort: Int = 4917
     @AppStorage("rpcThreads") private var rpcThreads: Int = 4
     
     @State private var serverURL:  String = ""
@@ -305,7 +305,7 @@ struct InferenceView: View {
                 HStack {
                     Text("Discovery IP")
                     Spacer()
-                    TextField("255.255.255.255", text: $rpcDiscoveryIp)
+                    TextField("LAN IP of server", text: $rpcDiscoveryIp)
                         .disabled(isRunning)
                         .multilineTextAlignment(.trailing)
                         .frame(maxWidth: 160)

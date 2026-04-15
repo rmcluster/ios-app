@@ -308,6 +308,9 @@ final class InferenceEngine: ObservableObject {
     
     private func startDiscoveryPing(discoveryIp: String, discoveryPort: Int, servicePort: Int) {
         stopDiscoveryPing()
+        let host = discoveryIp.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { return }
+
         discoveryTask = Task.detached {
             // Enable battery monitoring for the lifetime of this task.
             #if canImport(UIKit)
@@ -329,7 +332,7 @@ final class InferenceEngine: ObservableObject {
 
                     var comps = URLComponents()
                     comps.scheme = "http"
-                    comps.host   = discoveryIp
+                    comps.host   = host
                     comps.port   = discoveryPort
                     comps.path   = "/announce"
                     var items: [URLQueryItem] = [
@@ -353,9 +356,9 @@ final class InferenceEngine: ObservableObject {
                     let (data, response) = try await URLSession.shared.data(for: req)
 
                     if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
-                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let interval = json["interval"] as? Double {
-                        try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        let intervalSec = (json["interval"] as? NSNumber)?.doubleValue ?? 10
+                        try await Task.sleep(nanoseconds: UInt64(intervalSec * 1_000_000_000))
                     } else {
                         try await Task.sleep(nanoseconds: 1_000_000_000)
                     }
