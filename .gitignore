@@ -8,7 +8,8 @@ build-mac/
 build-mac-rpc-only/
 build-sim/
 vendor/
-
+build-xcode/
+build-xcode-sim/
 # Downloaded models
 Models/*.gguf
 
@@ -18,6 +19,10 @@ xcuserdata/
 DerivedData/
 *.hmap
 *.ipa
+*.xcresult
+*.xcuserstate
+*.xccheckout
+.swiftpm/
 
 # macOS
 .DS_Store
