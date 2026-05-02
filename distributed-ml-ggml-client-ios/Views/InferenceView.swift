@@ -18,6 +18,7 @@ import UniformTypeIdentifiers
 struct InferenceView: View {
 
     @EnvironmentObject private var engine: InferenceEngine
+    @EnvironmentObject private var settings: RpcSettings
 
     // ── UI state ──────────────────────────────────────────────────────────────
     @State private var chatInput     = ""
@@ -27,13 +28,6 @@ struct InferenceView: View {
     @State private var showDocPicker = false
     @State private var localModels: [URL] = []
 
-    // ── RPC worker state ──────────────────────────────────────────────────────
-    @AppStorage("rpcHost") private var rpcHost: String = "0.0.0.0"
-    @AppStorage("rpcPort") private var rpcPort: Int = 50052
-    @AppStorage("rpcDiscoveryIp") private var rpcDiscoveryIp: String = "255.255.255.255"
-    @AppStorage("rpcDiscoveryPort") private var rpcDiscoveryPort: Int = 50055
-    @AppStorage("rpcThreads") private var rpcThreads: Int = 4
-    
     @State private var serverURL:  String = ""
     @State private var showRPC:    Bool   = true
     @State private var selectedTab: Int  = 1
@@ -267,15 +261,18 @@ struct InferenceView: View {
                                 .fill(isRunning ? Color.green : Color.secondary.opacity(0.35))
                                 .frame(width: 9, height: 9)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(verbatim: "\(iface.ip):\(rpcPort)")
+                                Text(verbatim: "RPC \(iface.ip):\(settings.port)")
                                     .font(.system(.body, design: .monospaced).bold())
+                                Text(verbatim: "Storage \(iface.ip):\(settings.storagePort)")
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
                                 Text(iface.label)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
                             Button {
-                                UIPasteboard.general.string = "\(iface.ip):\(rpcPort)"
+                                UIPasteboard.general.string = "\(iface.ip):\(settings.port)"
                             } label: {
                                 Image(systemName: "doc.on.doc")
                             }
@@ -292,25 +289,26 @@ struct InferenceView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                IntStepperField("Thread count", value: $rpcThreads, in: 1...64, disabled: isRunning)
+                IntStepperField("Thread count", value: $settings.threads, in: 1...64, disabled: isRunning)
                 HStack {
                     Text("Host")
                     Spacer()
-                    TextField("0.0.0.0", text: $rpcHost)
+                    TextField("0.0.0.0", text: $settings.host)
                         .disabled(isRunning)
                         .multilineTextAlignment(.trailing)
                         .frame(maxWidth: 160)
                 }
-                IntStepperField("Port", value: $rpcPort, in: 1024...65535, disabled: isRunning)
+                IntStepperField("Port", value: $settings.port, in: 1024...65535, disabled: isRunning)
+                IntStepperField("Storage Port", value: $settings.storagePort, in: 1024...65535, disabled: isRunning)
                 HStack {
                     Text("Discovery IP")
                     Spacer()
-                    TextField("255.255.255.255", text: $rpcDiscoveryIp)
+                    TextField("LAN IP of server", text: $settings.discoveryIp)
                         .disabled(isRunning)
                         .multilineTextAlignment(.trailing)
                         .frame(maxWidth: 160)
                 }
-                IntStepperField("Discovery Port", value: $rpcDiscoveryPort, in: 1024...65535, disabled: isRunning)
+                IntStepperField("Discovery Port", value: $settings.discoveryPort, in: 1024...65535, disabled: isRunning)
             }
 
             // ── Start / Stop ──────────────────────────────────────────────────
@@ -331,11 +329,13 @@ struct InferenceView: View {
                 } else {
                     Button {
                         engine.startRPCServer(
-                            host: rpcHost,
-                            port: rpcPort,
-                            discoveryIp: rpcDiscoveryIp,
-                            discoveryPort: rpcDiscoveryPort,
-                            threads: rpcThreads
+                            host: settings.host,
+                            port: settings.port,
+                            storagePort: settings.storagePort,
+                            discoveryIp: settings.discoveryIp,
+                            discoveryPort: settings.discoveryPort,
+                            threads: settings.threads,
+                            deviceId: settings.deviceId
                         )
                     } label: {
                         Label(
@@ -396,10 +396,10 @@ struct InferenceView: View {
         Task {
             await engine.registerWithServer(
                 url,
-                deviceID: UIDeviceLabel.deviceID,
+                deviceID: settings.deviceId,
                 label:    UIDeviceLabel.current,
                 ip:       ip,
-                rpcPort:  rpcPort
+                rpcPort:  settings.port
             )
         }
     }
