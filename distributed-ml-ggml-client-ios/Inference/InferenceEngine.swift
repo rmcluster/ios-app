@@ -58,7 +58,6 @@ enum ModelState: Equatable {
 
 @MainActor
 final class InferenceEngine: ObservableObject {
-
     // ── Published state ───────────────────────────────────────────────────────
     @Published var modelState: ModelState = .unloaded
     @Published var generatedText: String  = ""
@@ -73,6 +72,7 @@ final class InferenceEngine: ObservableObject {
     private var rpcServerTask:  Task<Void, Never>?
     private var keepaliveTask:  Task<Void, Never>?
     private var discoveryTask:  Task<Void, Never>?
+    private var storageServer: StorageServer?
 
     static let shared = InferenceEngine()
 
@@ -242,17 +242,34 @@ final class InferenceEngine: ObservableObject {
     ///
     /// - Parameter port: TCP port to listen on (default 50052, same as Android team).
     func startRPCServer(
-        host: String = "0.0.0.0",
-        port: Int = 50052,
-        discoveryIp: String = "255.255.255.255",
-        discoveryPort: Int = 50055,
-        threads: Int = 4
-    ) {
+        host: String = RpcSettings.shared.host,
+        port: Int = RpcSettings.shared.port,
+        storagePort: Int = RpcSettings.shared.storagePort,
+        discoveryIp: String = RpcSettings.shared.discoveryIp,
+        discoveryPort: Int = RpcSettings.shared.discoveryPort,
+        threads: Int = RpcSettings.shared.threads,
+        deviceId: String = RpcSettings.shared.deviceId
+        ) {
+
         guard case .idle = rpcServerState else { return }
         let endpoint = "\(host):\(port)"
         rpcServerState = .starting
-        
-        startDiscoveryPing(discoveryIp: discoveryIp, discoveryPort: discoveryPort, servicePort: port)
+
+        let storageDir = RpcSettings.shared.storageDirectory
+        let storageServer = StorageServer(storageDir: storageDir)
+        if storageServer.start(port: storagePort) {
+            self.storageServer = storageServer
+        } else {
+            self.storageServer = nil
+        }
+
+        startDiscoveryPing(
+            discoveryIp: discoveryIp,
+            discoveryPort: discoveryPort,
+            servicePort: port,
+            storagePort: storagePort,
+            deviceId: deviceId
+        )
 
         rpcServerTask = Task.detached(priority: .userInitiated) { [bridge] in
             if !LlamaBridge.rpcAvailable() {
@@ -274,6 +291,9 @@ final class InferenceEngine: ObservableObject {
             // Blocking call – returns only when the server socket is closed.
             bridge.startRPCServer(endpoint, cacheDir: cacheDir, freeMB: freeMB, totalMB: totalMB, threads: UInt(threads))
             await MainActor.run {
+                self.storageServer?.stop()
+                self.storageServer = nil
+                self.stopDiscoveryPing()
                 self.rpcServerState = .idle
 #if canImport(UIKit)
                 UIApplication.shared.isIdleTimerDisabled = false
@@ -301,12 +321,19 @@ final class InferenceEngine: ObservableObject {
         rpcServerTask = nil
         stopKeepalive()
         stopDiscoveryPing()
+        storageServer?.stop()
+        storageServer = nil
         rpcServerState = .idle
     }
     
     // ── UDP Discovery Ping ────────────────────────────────────────────────────
-    
-    private func startDiscoveryPing(discoveryIp: String, discoveryPort: Int, servicePort: Int) {
+    private func startDiscoveryPing(
+        discoveryIp: String,
+        discoveryPort: Int,
+        servicePort: Int,
+        storagePort: Int,
+        deviceId: String
+    ) {
         stopDiscoveryPing()
         let host = discoveryIp.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return }
@@ -322,6 +349,7 @@ final class InferenceEngine: ObservableObject {
                     // Collect device info on each ping so values stay fresh.
                     let hwModel   = Self.hardwareModel()
                     let maxBytes  = LlamaBridge.availableProcessMemoryBytes()
+                    let localIp   = Self.primaryIPv4Address()
                     #if canImport(UIKit)
                     let battery   = await MainActor.run { UIDevice.current.batteryLevel }   // 0–1 or -1
                     #else
@@ -336,7 +364,10 @@ final class InferenceEngine: ObservableObject {
                     comps.port   = discoveryPort
                     comps.path   = "/announce"
                     var items: [URLQueryItem] = [
+                        .init(name: "id",       value: deviceId),
                         .init(name: "port",     value: "\(servicePort)"),
+                        .init(name: "storage_port", value: "\(storagePort)"),
+                        .init(name: "ip",       value: localIp),
                         .init(name: "model",    value: hwModel),
                         .init(name: "max_size", value: "\(maxBytes)"),
                     ]
@@ -381,6 +412,33 @@ final class InferenceEngine: ObservableObject {
         var machine = [CChar](repeating: 0, count: size)
         sysctlbyname("hw.machine", &machine, &size, nil, 0)
         return String(cString: machine)
+    }
+
+    private nonisolated static func primaryIPv4Address() -> String {
+        // Identify the primary interface name using the modern Network framework.
+        let monitor = NWPathMonitor()
+        let primaryInterfaceName = monitor.currentPath.availableInterfaces.first?.name
+        
+        var ifAddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifAddr) == 0, let first = ifAddr else { return "0.0.0.0" }
+        defer { freeifaddrs(first) }
+
+        return sequence(first: first, next: { $0.pointee.ifa_next })
+            .compactMap { node -> String? in
+                let ifa = node.pointee
+                guard ifa.ifa_addr.pointee.sa_family == UInt8(AF_INET) else { return nil }
+                
+                let name = String(cString: ifa.ifa_name)
+                // Prefer the OS-designated primary interface, otherwise ignore loopback.
+                if name == primaryInterfaceName || (primaryInterfaceName == nil && name != "lo0") {
+                    var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    getnameinfo(ifa.ifa_addr, socklen_t(ifa.ifa_addr.pointee.sa_len),
+                                &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
+                    return String(cString: host)
+                }
+                return nil
+            }
+            .first ?? "0.0.0.0"
     }
 
     // Maps ProcessInfo.ThermalState to an approximate temperature in °C.

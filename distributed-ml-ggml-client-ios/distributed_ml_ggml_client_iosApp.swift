@@ -13,6 +13,7 @@ struct distributed_ml_ggml_client_iosApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(InferenceEngine.shared)
+                .environmentObject(RpcSettings.shared)
         }
     }
 }
