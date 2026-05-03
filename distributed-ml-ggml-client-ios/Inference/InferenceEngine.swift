@@ -236,6 +236,9 @@ final class InferenceEngine: ObservableObject {
     /// Requires ggml-rpc.xcframework (rebuild with GGML_RPC=ON).
     var rpcAvailable: Bool { LlamaBridge.rpcAvailable() }
 
+    /// Whether the device supports Metal acceleration for llama.cpp.
+    var metalAvailable: Bool { LlamaBridge.metalAvailable() }
+
     /// Start the GGML RPC server so an external llama-cli can use this device
     /// as a Metal compute backend.  The phone is a leaf node only — it never
     /// coordinates inference itself.
