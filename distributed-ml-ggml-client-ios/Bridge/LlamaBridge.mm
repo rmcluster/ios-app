@@ -50,6 +50,26 @@
 #include <string>
 #include <cstring>
 
+static bool llama_device_has_simdgroup_reduction(void) {
+#if TARGET_OS_SIMULATOR || !defined(__arm64__)
+    return false;
+#else
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) return false;
+
+    bool ok = false;
+    if (@available(iOS 14.0, *)) {
+        ok = [dev supportsFamily:MTLGPUFamilyApple7];
+    }
+#if defined(MTLGPUFamilyMetal3)
+    if (!ok && @available(iOS 16.0, *)) {
+        ok = [dev supportsFamily:MTLGPUFamilyMetal3];
+    }
+#endif
+    return ok;
+#endif
+}
+
 #if LLAMA_AVAILABLE
 // llama_batch_add was removed from the public header in b5076.
 // Inline the same helper that llama.cpp's common/ layer uses internally.
@@ -173,7 +193,16 @@ typedef NS_ENUM(NSInteger, LlamaBridgeError) {
 #else
     // ── load model ───────────────────────────────────────────────────────────
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 99;   // offload all layers to Metal on device
+    
+    // Gate hardware acceleration: only offload to GPU if the device supports
+    // the required Metal features (simdgroup reduction). This prevents crashes
+    // on older devices like iPhone 6 (A8) where some kernels may fail.
+    if ([LlamaBridge metalAvailable]) {
+        model_params.n_gpu_layers = 99;   // offload all layers to Metal
+    } else {
+        model_params.n_gpu_layers = 0;    // fall back to CPU (Accelerate)
+        NSLog(@"[LlamaBridge] Device does not support required Metal features. Falling back to CPU.");
+    }
 
     _model = llama_model_load_from_file(path.UTF8String, model_params);
     if (!_model) {
@@ -447,6 +476,10 @@ typedef NS_ENUM(NSInteger, LlamaBridgeError) {
     return GGML_RPC_AVAILABLE;
 }
 
++ (BOOL)metalAvailable {
+    return llama_device_has_simdgroup_reduction();
+}
+
 + (NSUInteger)processAvailableMemoryBytes {
     return (NSUInteger)os_proc_available_memory();
 }
@@ -467,14 +500,11 @@ typedef NS_ENUM(NSInteger, LlamaBridgeError) {
     // the RPC server then dereferences → EXC_BAD_ACCESS at 0x10.
     ggml_backend_dev_t dev = nullptr;
 #if !TARGET_OS_SIMULATOR && __has_include(<ggml-metal.h>)
-    // Use the GGML function which runs the check inside ggml-metal-device.m
-    // where Metal.h is properly set up.  The inline MTLCreateSystemDefaultDevice()
-    // check done from a Swift detached-task background thread was unreliable on
-    // some devices (e.g. iPhone 13 / A15 incorrectly returning false).
-    if (ggml_backend_metal_has_simdgroup_reduction()) {
+    // Keep the old behavior: use GPU only when simdgroup reduction is available.
+    if ([LlamaBridge metalAvailable]) {
         dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
     } else {
-        NSLog(@"[LlamaBridge] GPU lacks simdgroup reduction (pre-A15). Using CPU backend for RPC server.");
+        NSLog(@"[LlamaBridge] GPU lacks required Metal features. Using CPU backend for RPC server.");
     }
 #endif
     if (!dev) {

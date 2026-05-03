@@ -134,6 +134,9 @@ typedef void (^LlamaShardCallback)(NSData *hiddenState,
 /// Requires ggml-rpc.xcframework linked in the Xcode target.
 + (BOOL)rpcAvailable;
 
+/// Returns YES if the device supports the Metal features required by llama.cpp.
++ (BOOL)metalAvailable;
+
 /// Bytes the current process can still allocate before iOS jetsam-kills it.
 /// Uses os_proc_available_memory() — more accurate than system-wide free pages
 /// because it reflects the per-process limit enforced by the kernel.
